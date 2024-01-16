@@ -19,7 +19,7 @@ enum Node {
 
 #[derive(Clone)]
 enum Expr {
-    Expr { str: String, func: fn(&Vars) -> i32 },
+    Func { str: String, func: fn(&Vars) -> i32 },
     And(Box<Expr>, Box<Expr>),
     Not(Box<Expr>),
     Subs(Box<Expr>, HashMap<String, Expr>),
@@ -29,7 +29,7 @@ enum Expr {
 impl Debug for Expr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Expr::Expr { str, .. } => write!(f, "{}", str),
+            Expr::Func { str, .. } => write!(f, "{}", str),
             Expr::And(left, right) => write!(f, "({:?} && {:?})", left, right),
             Expr::Not(expr) => write!(f, "!({:?})", expr),
             Expr::Subs(inner, table) => {
@@ -47,7 +47,7 @@ impl Debug for Expr {
 impl Expr {
     fn apply(&self, vars: &Vars) -> i32 {
         match self {
-            Expr::Expr { func, .. } => func(vars),
+            Expr::Func { func, .. } => func(vars),
             Expr::And(left, right) => left.apply(vars) & right.apply(vars),
             Expr::Not(expr) => 1 - expr.apply(vars),
             Expr::Subs(inner, table) => {
@@ -57,7 +57,7 @@ impl Expr {
                 }
                 inner.apply(&vars)
             }
-            Expr::Var(name) => vars.get(name).unwrap_or(&0).clone(),
+            Expr::Var(name) => *vars.get(name).unwrap_or(&0),
         }
     }
 }
@@ -66,6 +66,7 @@ macro_rules! expr_to_rust_expr {
     ($vars:expr, ( $($inner:tt)+ )) => {
         ( expr_to_rust_expr!($vars, $($inner)+) )
     };
+    /*
     ($vars:expr, { var $name:expr }) => {
         $vars.get($name).unwrap_or(&0).clone()
     };
@@ -75,6 +76,7 @@ macro_rules! expr_to_rust_expr {
     ($vars:expr, { $expr:expr }) => {
         $expr
     };
+    */
     ($vars:expr, $left:tt $op:tt $right:tt) => {
         expr_to_rust_expr!($vars, $left) $op expr_to_rust_expr!($vars, $right)
     };
@@ -88,13 +90,19 @@ macro_rules! expr_to_rust_expr {
 
 macro_rules! expr {
     ($($expr:tt)+) => {
-        Expr::Expr {
+        Expr::Func {
             str: stringify!($($expr)+).to_string(),
             func: |vars: &Vars| (expr_to_rust_expr!(vars, $($expr)+)).into(),
         }
     };
 }
 
+/// Syntax for creating a node:
+/// node ::= start | halt | <assignment> | <branch> | <goto>
+/// assignment ::= <name> := <expr>
+/// branch ::= if (<expr>), <label>, <label>
+/// goto ::= goto <label>
+/// expr ::= <expr> <op> <expr> | <name> | <literal> | (<expr>)
 macro_rules! node {
     (start) => { Node::Start};
     (halt) => { Node::Halt };
@@ -154,7 +162,10 @@ impl Program {
         }
     }
 
-    pub fn get_transformations_and_reachabitily(&self, path: &Path) -> (Expr, HashMap<String, Expr>) {
+    pub fn get_transformations_and_reachabitily(
+        &self,
+        path: &Path,
+    ) -> (Expr, HashMap<String, Expr>) {
         let mut t = HashMap::new();
         let mut r = expr!(true);
 
@@ -193,7 +204,23 @@ impl Program {
     }
 }
 
+fn do_cli(program: &Program, vars: &Vars, path: &Path) {
+    let original_vars = vars;
+    let mut vars = original_vars.clone();
+    program.run(&mut vars);
+    println!("{:?}", program);
+    println!(
+        "Variable state at the start of the program: {:?}",
+        original_vars
+    );
+    println!("Variable state at the end of the program: {:?}", vars);
+    dbg!(program.get_transformations_and_reachabitily(path));
+}
+
 fn main() {
+    // This "language" is slightly different from "real" flow programs - branches
+    // don't have 2 children, but have indexes for lines to jump to for true and
+    // false cases. (Why? It was easier to implement.)
     let program = Program::new([
         node!(start),
         node!(x := input),
@@ -204,14 +231,6 @@ fn main() {
         node!(halt),
     ]);
     let path = vec![0, 1, 2, 5, 6];
-    let mut vars: HashMap<_, _> = vec![("input".into(), 5)].into_iter().collect();
-    let original_vars = vars.clone();
-    program.run(&mut vars);
-    println!("{:?}", program);
-    println!(
-        "Variable state at the start of the program: {:?}",
-        original_vars
-    );
-    println!("Variable state at the end of the program: {:?}", vars);
-    dbg!(program.get_transformations_and_reachabitily(&path));
+    let vars = [("input".into(), 5)].into_iter().collect();
+    do_cli(&program, &vars, &path);
 }
