@@ -207,14 +207,24 @@ impl Program {
 fn do_cli(program: &Program, vars: &Vars, path: &Path) {
     let original_vars = vars;
     let mut vars = original_vars.clone();
+
     program.run(&mut vars);
-    println!("{:?}", program);
+    let (r, t) = program.get_transformations_and_reachabitily(path);
+
+    println!("The program:");
+    for (i, node) in program.nodes.iter().enumerate() {
+        println!("{: >2} | {:?}", i, node);
+    }
+    println!();
     println!(
         "Variable state at the start of the program: {:?}",
         original_vars
     );
     println!("Variable state at the end of the program: {:?}", vars);
-    dbg!(program.get_transformations_and_reachabitily(path));
+    println!();
+    println!("For the path: {:?}", path);
+    println!("Reachability condition: {:?}", r);
+    println!("Transformations: {:?}", t);
 }
 
 fn main() {
@@ -231,6 +241,7 @@ fn main() {
         node!(halt),
     ]);
     let path = vec![0, 1, 2, 5, 6];
-    let vars = [("input".into(), 5)].into_iter().collect();
+    let vars = [("input".into(), -5)];
+    let vars = vars.into_iter().collect();
     do_cli(&program, &vars, &path);
 }
