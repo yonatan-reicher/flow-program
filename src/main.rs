@@ -208,9 +208,18 @@ impl Program {
     }
 
     pub fn is_path_valid(&self, path: &Path) -> bool {
-        let Some(mut last) = path.last() else {
+        if path.is_empty() {
             return false;
         };
+
+        if path[0] != self.start {
+            return false;
+        }
+
+        // if self.nodes[path.last()] != Node::Halt then return false
+        if !matches!(path.last().and_then(|&l| self.nodes.get(l)), Some(Node::Halt)) {
+            return false;
+        }
 
         for (&label, &next_label) in path.iter().zip(path.iter().skip(1)) {
             match self.nodes.get(label) {
