@@ -241,37 +241,45 @@ impl Program {
 
         for current_path_index in (0..path.len()).rev() {
             match &self.nodes[path[current_path_index]] {
-                Node::Start => break,
-                Node::Halt => (),
+                // start and halt don't do anything
+                Node::Start | Node::Halt => (),
+                // t <- t[y <- e]
+                // r <- r[y <- e]
                 Node::Assign(assignments) => {
-                    for (name, expr) in assignments {
-                        let current_expr = {
-                            // Create a clone of name to be moved to the expresion
+                    let assignments: HashMap<_, _> = assignments.iter().cloned().collect();
+                    // Make sure every variable we are going to use and isn't
+                    // in the table gets mapped by  t[name] |-> name
+                    for name in assignments.keys() {
+                        if !t.contains_key(name) {
                             let name = name.clone();
-                            t.get(&name).cloned().unwrap_or(expr!({ var & name }))
-                        };
-                        let new_expr = Expr::Subs(
-                            Box::new(current_expr),
-                            vec![(name.clone(), expr.clone())].into_iter().collect(),
-                        );
-                        t.insert(name.clone(), new_expr);
-                        r = Expr::Subs(
-                            Box::new(r),
-                            vec![(name.clone(), expr.clone())].into_iter().collect(),
-                        );
+                            t.insert(name.clone(), expr!({ var & name }));
+                        }
                     }
+                    // Do t[name] <- t[name][y <- e]
+                    // i.e. use `assignments` on every entry.
+                    for expr in t.values_mut() {
+                        *expr = Expr::Subs(expr.clone().into(), assignments.clone());
+                    }
+                    // Do r <- r[y <- e]
+                    r = Expr::Subs(r.into(), assignments.clone());
                 }
+                // r <- r && (l_(m+1) = T ? B(x) : !B(x))
                 Node::Branch(cond, t, f) => {
                     let t = *t;
                     let f = *f;
                     let cond = cond.clone();
-                    let k = if path[current_path_index + 1] == t {
+
+                    // This is our `l_(m+1)`
+                    let prev_node_label = path[current_path_index + 1];
+                    let branch_taken_condition = if prev_node_label == t {
+                        // `B(x)`
                         cond
                     } else {
                         assert_eq!(path[current_path_index + 1], f);
+                        // `!B(x)`
                         expr!(!{ expr cond })
                     };
-                    r = expr!({ expr k } && { expr r });
+                    r = expr!({ expr branch_taken_condition } && { expr r });
                 }
             }
         }
@@ -283,7 +291,7 @@ fn do_cli(program: &Program, vars: &Vars, path: &Path) {
     let original_vars = vars;
     let mut vars = original_vars.clone();
 
-    dbg!(program.run(&mut vars));
+    let path_taken = program.run(&mut vars);
     let (r, t) = program.get_transformations_and_reachabitily(path);
 
     println!("The program:");
@@ -296,6 +304,7 @@ fn do_cli(program: &Program, vars: &Vars, path: &Path) {
         original_vars
     );
     println!("Variable state at the end of the program: {:?}", vars);
+    println!("Path taken: {:?}", path_taken);
     println!();
     println!("For the path: {:?}", path);
     println!("Reachability condition: {:?}", r);
@@ -303,6 +312,9 @@ fn do_cli(program: &Program, vars: &Vars, path: &Path) {
 }
 
 fn main() {
+    // To see the interesting parts of this code, look at
+    // `Program::get_transformations_and_reachabitily`.
+
     // This "language" is slightly different from "real" flow programs - branches
     // don't have 2 children, but have indexes for lines to jump to for true and
     // false cases. (Why? It was easier to implement.)
@@ -316,7 +328,7 @@ fn main() {
         node!(halt),
     ]);
     let path = vec![0, 1, 2, 5, 6];
-    let vars = [("input".into(), -5)];
+    let vars = [("input".into(), 0)];
     let vars = vars.into_iter().collect();
     do_cli(&program, &vars, &path);
 }
