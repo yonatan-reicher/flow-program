@@ -207,10 +207,35 @@ impl Program {
         path
     }
 
+    pub fn is_path_valid(&self, path: &Path) -> bool {
+        let Some(mut last) = path.last() else {
+            return false;
+        };
+
+        for (&label, &next_label) in path.iter().zip(path.iter().skip(1)) {
+            match self.nodes.get(label) {
+                None => return false,
+                Some(Node::Start | Node::Halt | Node::Assign(..)) => {
+                    if next_label != label + 1 {
+                        return false;
+                    }
+                }
+                Some(Node::Branch(_, t, f)) => {
+                    if next_label != *t && next_label != *f {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
     pub fn get_transformations_and_reachabitily(
         &self,
         path: &Path,
     ) -> (Expr<bool>, HashMap<String, Expr<i32>>) {
+        assert!(self.is_path_valid(path));
+
         let mut t = HashMap::new();
         let mut r = expr!(true);
 
