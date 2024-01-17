@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::{self, Debug, Formatter};
+use std::rc::Rc;
 
 #[derive(Debug)]
 struct Program {
@@ -19,11 +20,10 @@ enum Node {
 
 #[derive(Clone)]
 enum Expr {
-    Func { str: String, func: fn(&Vars) -> i32 },
+    Func { str: String, func: Rc<dyn Fn(&Vars) -> i32> },
     And(Box<Expr>, Box<Expr>),
     Not(Box<Expr>),
     Subs(Box<Expr>, HashMap<String, Expr>),
-    Var(String),
 }
 
 impl Debug for Expr {
@@ -39,7 +39,6 @@ impl Debug for Expr {
                 }
                 write!(f, "{}", inner)
             }
-            Expr::Var(name) => write!(f, "{}", name),
         }
     }
 }
@@ -57,7 +56,6 @@ impl Expr {
                 }
                 inner.apply(&vars)
             }
-            Expr::Var(name) => *vars.get(name).unwrap_or(&0),
         }
     }
 }
@@ -66,10 +64,10 @@ macro_rules! expr_to_rust_expr {
     ($vars:expr, ( $($inner:tt)+ )) => {
         ( expr_to_rust_expr!($vars, $($inner)+) )
     };
-    /*
     ($vars:expr, { var $name:expr }) => {
         $vars.get($name).unwrap_or(&0).clone()
     };
+    /*
     ($vars:expr, { expr $expr:expr }) => {
         $expr.apply($vars)
     };
@@ -88,11 +86,42 @@ macro_rules! expr_to_rust_expr {
     };
 }
 
+macro_rules! expr_to_string {
+    (( $($inner:tt)+ )) => {{
+        format!("({})", &expr_to_string!($($inner)+))
+    }};
+    ({ var $name:expr }) => {{
+        $name.clone()
+    }};
+    /*
+    ({ expr $expr:expr }) => {
+        $expr.apply($vars)
+    };
+    ({ $expr:expr }) => {
+        $expr
+    };
+    */
+    ($left:tt $op:tt $right:tt) => {{
+        format!("{} {} {}",
+            &expr_to_string!($left),
+            stringify!($op),
+            &expr_to_string!($right),
+        )
+    }};
+    ($name:ident) => {{
+        stringify!($name).to_string()
+    
+    }};
+    ($lit:literal) => {{
+        stringify!($lit).to_string()
+    }};
+}
+
 macro_rules! expr {
     ($($expr:tt)+) => {
         Expr::Func {
-            str: stringify!($($expr)+).to_string(),
-            func: |vars: &Vars| (expr_to_rust_expr!(vars, $($expr)+)).into(),
+            str: expr_to_string!($($expr)+),
+            func: Rc::new(move |vars: &Vars| (expr_to_rust_expr!(vars, $($expr)+)).into()),
         }
     };
 }
@@ -175,7 +204,11 @@ impl Program {
                 Node::Halt => (),
                 Node::Assign(assignments) => {
                     for (name, expr) in assignments {
-                        let current_expr = t.get(name).cloned().unwrap_or(Expr::Var(name.clone()));
+                        let current_expr = {
+                            // Create a clone of name to be moved to the expresion
+                            let name = name.clone();
+                            t.get(&name).cloned().unwrap_or(expr!({ var &name }))
+                        };
                         let new_expr = Expr::Subs(
                             Box::new(current_expr),
                             vec![(name.clone(), expr.clone())].into_iter().collect(),
