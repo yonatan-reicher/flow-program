@@ -24,14 +24,14 @@ enum Expr<Ret> {
         str: String,
         func: Rc<dyn Fn(&Vars) -> Ret>,
     },
-    Subs(Box<Expr<Ret>>, HashMap<String, Expr<i32>>),
+    Substitute(Box<Expr<Ret>>, HashMap<String, Expr<i32>>),
 }
 
 impl<Ret> Debug for Expr<Ret> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Expr::Func { str, .. } => write!(f, "{}", str),
-            Expr::Subs(inner, table) => {
+            Expr::Substitute(inner, table) => {
                 let mut inner = format!("{:?}", inner);
                 for (name, expr) in table {
                     inner = inner.replace(name, &format!("{:?}", expr));
@@ -46,7 +46,7 @@ impl<Ret> Expr<Ret> {
     fn apply(&self, vars: &Vars) -> Ret {
         match self {
             Expr::Func { func, .. } => func(vars),
-            Expr::Subs(inner, table) => {
+            Expr::Substitute(inner, table) => {
                 let mut vars = vars.clone();
                 for (name, expr) in table {
                     vars.insert(name.clone(), expr.apply(&vars));
@@ -258,10 +258,10 @@ impl Program {
                     // Do t[name] <- t[name][y <- e]
                     // i.e. use `assignments` on every entry.
                     for expr in t.values_mut() {
-                        *expr = Expr::Subs(expr.clone().into(), assignments.clone());
+                        *expr = Expr::Substitute(expr.clone().into(), assignments.clone());
                     }
                     // Do r <- r[y <- e]
-                    r = Expr::Subs(r.into(), assignments.clone());
+                    r = Expr::Substitute(r.into(), assignments.clone());
                 }
                 // r <- r && (l_(m+1) = T ? B(x) : !B(x))
                 Node::Branch(cond, t, f) => {
