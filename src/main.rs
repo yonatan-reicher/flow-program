@@ -14,24 +14,23 @@ type Vars = HashMap<String, i32>;
 enum Node {
     Start,
     Halt,
-    Assign(Vec<(String, Expr)>),
-    Branch(Expr, usize, usize),
+    Assign(Vec<(String, Expr<i32>)>),
+    Branch(Expr<bool>, usize, usize),
 }
 
 #[derive(Clone)]
-enum Expr {
-    Func { str: String, func: Rc<dyn Fn(&Vars) -> i32> },
-    And(Box<Expr>, Box<Expr>),
-    Not(Box<Expr>),
-    Subs(Box<Expr>, HashMap<String, Expr>),
+enum Expr<Ret> {
+    Func {
+        str: String,
+        func: Rc<dyn Fn(&Vars) -> Ret>,
+    },
+    Subs(Box<Expr<Ret>>, HashMap<String, Expr<i32>>),
 }
 
-impl Debug for Expr {
+impl<Ret> Debug for Expr<Ret> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Expr::Func { str, .. } => write!(f, "{}", str),
-            Expr::And(left, right) => write!(f, "({:?} && {:?})", left, right),
-            Expr::Not(expr) => write!(f, "!({:?})", expr),
             Expr::Subs(inner, table) => {
                 let mut inner = format!("{:?}", inner);
                 for (name, expr) in table {
@@ -43,12 +42,10 @@ impl Debug for Expr {
     }
 }
 
-impl Expr {
-    fn apply(&self, vars: &Vars) -> i32 {
+impl<Ret> Expr<Ret> {
+    fn apply(&self, vars: &Vars) -> Ret {
         match self {
             Expr::Func { func, .. } => func(vars),
-            Expr::And(left, right) => left.apply(vars) & right.apply(vars),
-            Expr::Not(expr) => 1 - expr.apply(vars),
             Expr::Subs(inner, table) => {
                 let mut vars = vars.clone();
                 for (name, expr) in table {
@@ -61,46 +58,41 @@ impl Expr {
 }
 
 macro_rules! expr_to_rust_expr {
+    ($vars:expr, $left:tt $op:tt $right:tt) => {
+        expr_to_rust_expr!($vars, $left) $op expr_to_rust_expr!($vars, $right)
+    };
+    // This rule must come before the $lit:literal rule because the `-` in `-x`
+    // counts as the start of a literal.
+    ($vars:expr, $op:tt $right:tt) => {{
+        $op expr_to_rust_expr!($vars, $right)
+    }};
+    // This rule must come before the $name:ident rule because `true` counts as
+    // an identifier.
+    ($vars:expr, $lit:literal) => {
+        $lit
+    };
+    ($vars:expr, $name:ident) => {
+        $vars.get(stringify!($name)).cloned().unwrap_or_default()
+    };
     ($vars:expr, ( $($inner:tt)+ )) => {
         ( expr_to_rust_expr!($vars, $($inner)+) )
     };
     ($vars:expr, { var $name:expr }) => {
-        $vars.get($name).unwrap_or(&0).clone()
+        $vars.get($name).cloned().unwrap_or_default()
     };
-    /*
     ($vars:expr, { expr $expr:expr }) => {
         $expr.apply($vars)
     };
+    /*
     ($vars:expr, { $expr:expr }) => {
         $expr
     };
     */
-    ($vars:expr, $left:tt $op:tt $right:tt) => {
-        expr_to_rust_expr!($vars, $left) $op expr_to_rust_expr!($vars, $right)
-    };
-    ($vars:expr, $name:ident) => {
-        $vars.get(stringify!($name)).unwrap_or(&0).clone()
-    };
-    ($vars:expr, $lit:literal) => {
-        $lit
-    };
 }
 
 macro_rules! expr_to_string {
-    (( $($inner:tt)+ )) => {{
-        format!("({})", &expr_to_string!($($inner)+))
-    }};
-    ({ var $name:expr }) => {{
-        $name.clone()
-    }};
-    /*
-    ({ expr $expr:expr }) => {
-        $expr.apply($vars)
-    };
-    ({ $expr:expr }) => {
-        $expr
-    };
-    */
+    // The order of the rules here must match the order of the rules in the
+    // expr_to_rust_expr! macro.
     ($left:tt $op:tt $right:tt) => {{
         format!("{} {} {}",
             &expr_to_string!($left),
@@ -108,20 +100,41 @@ macro_rules! expr_to_string {
             &expr_to_string!($right),
         )
     }};
-    ($name:ident) => {{
-        stringify!($name).to_string()
-    
+    ($op:tt $right:tt) => {{
+        format!("{}{}",
+            stringify!($op),
+            &expr_to_string!($right),
+        )
     }};
     ($lit:literal) => {{
         stringify!($lit).to_string()
     }};
+    ($name:ident) => {{
+        stringify!($name).to_string()
+    }};
+    (( $($inner:tt)+ )) => {{
+        format!("({})", &expr_to_string!($($inner)+))
+    }};
+    ({ var $name:expr }) => {{
+        $name.clone()
+    }};
+    ({ expr $expr:expr }) => {
+        format!("({:?})", $expr)
+    };
+    /*
+    ({ $expr:expr }) => {
+        $expr
+    };
+    */
 }
 
 macro_rules! expr {
     ($($expr:tt)+) => {
         Expr::Func {
             str: expr_to_string!($($expr)+),
-            func: Rc::new(move |vars: &Vars| (expr_to_rust_expr!(vars, $($expr)+)).into()),
+            func: Rc::new(move | #[allow(unused_variables)] vars: &Vars| {
+                (expr_to_rust_expr!(vars, $($expr)+)).into()
+            }),
         }
     };
 }
@@ -164,7 +177,7 @@ impl Node {
                 *pc += 1;
             }
             Node::Branch(cond, t, f) => {
-                if cond.apply(vars) != 0 {
+                if cond.apply(vars) {
                     *pc = *t;
                 } else {
                     *pc = *f;
@@ -183,18 +196,21 @@ impl Program {
         Self { nodes, start }
     }
 
-    pub fn run(&self, vars: &mut Vars) {
+    pub fn run(&self, vars: &mut Vars) -> Path {
         let mut pc = self.start;
         let mut stop = false;
+        let mut path = vec![];
         while !stop {
+            path.push(pc);
             self.nodes[pc].run(vars, &mut pc, &mut stop);
         }
+        path
     }
 
     pub fn get_transformations_and_reachabitily(
         &self,
         path: &Path,
-    ) -> (Expr, HashMap<String, Expr>) {
+    ) -> (Expr<bool>, HashMap<String, Expr<i32>>) {
         let mut t = HashMap::new();
         let mut r = expr!(true);
 
@@ -207,7 +223,7 @@ impl Program {
                         let current_expr = {
                             // Create a clone of name to be moved to the expresion
                             let name = name.clone();
-                            t.get(&name).cloned().unwrap_or(expr!({ var &name }))
+                            t.get(&name).cloned().unwrap_or(expr!({ var & name }))
                         };
                         let new_expr = Expr::Subs(
                             Box::new(current_expr),
@@ -223,13 +239,14 @@ impl Program {
                 Node::Branch(cond, t, f) => {
                     let t = *t;
                     let f = *f;
+                    let cond = cond.clone();
                     let k = if path[current_path_index + 1] == t {
-                        cond.clone()
+                        cond
                     } else {
                         assert_eq!(path[current_path_index + 1], f);
-                        Expr::Not(Box::new(cond.clone()))
+                        expr!(!{ expr cond })
                     };
-                    r = Expr::And(Box::new(r), Box::new(k));
+                    r = expr!({ expr k } && { expr r });
                 }
             }
         }
@@ -241,7 +258,7 @@ fn do_cli(program: &Program, vars: &Vars, path: &Path) {
     let original_vars = vars;
     let mut vars = original_vars.clone();
 
-    program.run(&mut vars);
+    dbg!(program.run(&mut vars));
     let (r, t) = program.get_transformations_and_reachabitily(path);
 
     println!("The program:");
@@ -270,7 +287,7 @@ fn main() {
         node!(if (x >= 0), 3, 5),
         node!(x := x * x),
         node!(goto 6),
-        node!(x := 0 - (x * x)),
+        node!(x := - (x * x)),
         node!(halt),
     ]);
     let path = vec![0, 1, 2, 5, 6];
